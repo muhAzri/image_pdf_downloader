@@ -46,13 +46,11 @@ class ImageDownloadService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? {
-        Log.d("ImageDownloadService", "Service bound")
         return null
     }
 
     override fun onCreate() {
         super.onCreate()
-        Log.d("ImageDownloadService", "Service created")
         createNotificationChannels()
     }
 
@@ -67,7 +65,6 @@ class ImageDownloadService : Service() {
             val notificationManager: NotificationManager =
                 getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
-            Log.d("ImageDownloadService", "Notification channel created: $CHANNEL_ID")
         }
     }
 
@@ -76,11 +73,9 @@ class ImageDownloadService : Service() {
         val jobName = intent?.getStringExtra("jobName")
         val imageUrls = intent?.getStringArrayListExtra("imageUrls")
 
-        Log.d("ImageDownloadService", "Service started with jobName: $jobName and ${imageUrls?.size ?: 0} imageUrls")
 
         if (jobName != null && imageUrls != null) {
             if (hasStoragePermission()) {
-                Log.d("ImageDownloadService", "Storage permission granted")
 
                 val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                     .setContentTitle("Downloading Images")
@@ -98,11 +93,9 @@ class ImageDownloadService : Service() {
                     processNextJob()
                 }
             } else {
-                Log.d("ImageDownloadService", "Storage permission denied")
                 requestStoragePermission()
             }
         } else {
-            Log.d("ImageDownloadService", "JobName or imageUrls is null")
         }
 
         return START_STICKY
@@ -110,28 +103,24 @@ class ImageDownloadService : Service() {
 
     @RequiresApi(Build.VERSION_CODES.O)
     private fun processNextJob() {
-        Log.d("ImageDownloadService", "Processing next job in queue")
         val currentJob = jobQueue.poll()
         if (currentJob != null) {
             isJobRunning = true
             downloadImages(currentJob)
         } else {
             isJobRunning = false
-            Log.d("ImageDownloadService", "No more jobs, stopping service")
             stopSelf()
         }
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
     private fun downloadImages(job: ImageDownloadJob) {
-        Log.d("ImageDownloadService", "Starting download for job: ${job.jobName}")
         Thread {
             val notificationId = UUID.randomUUID().hashCode() // Unique notification ID
             try {
                 // Use a LinkedHashMap to preserve the insertion order
                 val downloadedFiles = LinkedHashMap<String, File>()
                 for (url in job.imageUrls) {
-                    Log.d("ImageDownloadService", "Downloading image: $url")
                     val file = downloadImage(url)
                     if (file != null) {
                         downloadedFiles[url] = file
@@ -150,10 +139,9 @@ class ImageDownloadService : Service() {
                 // Now that we have ordered image files, create the PDF
                 if (orderedImageFiles.size == job.imageUrls.size) {
                     val pdfFile = createPdfFromImages(orderedImageFiles, job.jobName)
-                    showNotification(notificationId, "${job.jobName} PDF created: ${pdfFile.path}")
+                    showNotification(notificationId, "${job.jobName} Downloaded Stored in: ${pdfFile.path}")
                 }
             } catch (e: Exception) {
-                Log.e("ImageDownloadService", "Error downloading images", e)
                 showNotification(notificationId, "${job.jobName} failed")
             } finally {
                 isJobRunning = false
@@ -163,7 +151,6 @@ class ImageDownloadService : Service() {
     }
 
     private fun downloadImage(imageUrl: String): File? {
-        Log.d("ImageDownloadService", "Downloading image: $imageUrl")
         return try {
             val request = Request.Builder().url(imageUrl).build()
             client.newCall(request).execute().use { response ->
@@ -179,7 +166,6 @@ class ImageDownloadService : Service() {
                 file
             }
         } catch (e: Exception) {
-            Log.e("ImageDownloadService", "Download error: $imageUrl", e)
             null
         }
     }
@@ -254,10 +240,9 @@ class ImageDownloadService : Service() {
     }
 
     private fun showNotification(notificationId: Int, status: String) {
-        Log.d("ImageDownloadService", "Showing notification: $status")
         val notificationManager = NotificationManagerCompat.from(this)
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Image Download Status")
+            .setContentTitle("Download Status")
             .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_menu_report_image)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
@@ -268,14 +253,12 @@ class ImageDownloadService : Service() {
     }
 
     private fun updateNotification(notificationId: Int, jobName: String, current: Int, total: Int) {
-        Log.d("ImageDownloadService", "Updating notification for $jobName: $current of $total")
 
         val progress = (current.toFloat() / total * 100).toInt()
 
         val notificationManager = NotificationManagerCompat.from(this)
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Downloading Images for $jobName")
-//            .setContentText("Progress: $current of $total")
+            .setContentTitle("Downloading $jobName")
             .setSmallIcon(android.R.drawable.ic_menu_report_image)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setSilent(true)
@@ -295,12 +278,10 @@ class ImageDownloadService : Service() {
                 Manifest.permission.WRITE_EXTERNAL_STORAGE
             ) == PackageManager.PERMISSION_GRANTED
         }
-        Log.d("ImageDownloadService", "Has storage permission: $hasPermission")
         return hasPermission
     }
 
     private fun requestStoragePermission() {
-        Log.d("ImageDownloadService", "Requesting storage permission")
         val intent = Intent("com.zrifapps.image_pdf_downloader.PERMISSION_REQUEST")
         sendBroadcast(intent) // Notify that permission is required
     }
