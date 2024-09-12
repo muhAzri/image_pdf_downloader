@@ -167,22 +167,40 @@ class ImageDownloadService : Service() {
 
     private fun createPdfFromImages(imageFiles: List<File>, jobName: String): Uri? {
         val resolver = applicationContext.contentResolver
+        val pdfUri: Uri?
 
-        // Define the file information for MediaStore
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "$jobName.pdf")
-            put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Use MediaStore API for Android 29 and above
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "$jobName.pdf")
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            pdfUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+        } else {
+            // For Android below 29, write directly to the Downloads directory
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val pdfFile = File(downloadsDir, "$jobName.pdf")
+            pdfUri = Uri.fromFile(pdfFile)
+
+            try {
+                pdfFile.createNewFile()
+            } catch (e: IOException) {
+                Log.e("PdfConversionService", "Failed to create PDF file: ${e.message}", e)
+                return null
+            }
         }
 
-        // Insert the PDF into the MediaStore
-        val pdfUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-        if (pdfUri != null) {
-            resolver.openOutputStream(pdfUri)?.use { outputStream ->
-                generateSinglePagePdfWithStretchedWidth(outputStream, imageFiles)
+        pdfUri?.let {
+            try {
+                resolver.openOutputStream(it)?.use { outputStream ->
+                    generateSinglePagePdfWithStretchedWidth(outputStream, imageFiles)
+                }
+            } catch (e: IOException) {
+                Log.e("PdfConversionService", "Failed to write PDF: ${e.message}", e)
             }
-        } else {
-            Log.e("PdfConversionService", "Failed to create MediaStore entry for PDF")
+        } ?: run {
+            Log.e("PdfConversionService", "Failed to create PDF URI")
         }
 
         return pdfUri
@@ -214,24 +232,16 @@ class ImageDownloadService : Service() {
             htmlContent.append(imgHtml)
         }
 
-        // Close the HTML tags
         htmlContent.append("</body></html>")
 
         try {
             val writer = PdfWriter(outputStream)
             val pdfDocument = PdfDocument(writer)
-
-            // Set the PDF page size to the width of A4 and the total height of all images
             val customPageSize = PageSize(pdfPageWidth, totalHeight)
             pdfDocument.defaultPageSize = customPageSize
-
-            // Create the document
             val document = Document(pdfDocument)
 
-            // Convert the HTML content into the PDF
             HtmlConverter.convertToPdf(htmlContent.toString().byteInputStream(), pdfDocument)
-
-            // Close the document
             document.close()
 
         } catch (e: IOException) {
@@ -240,6 +250,7 @@ class ImageDownloadService : Service() {
             Log.e("PdfConversionService", "Error creating PDF: ${e.message}", e)
         }
     }
+
 
 
 
