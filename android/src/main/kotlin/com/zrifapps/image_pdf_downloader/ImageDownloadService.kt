@@ -5,23 +5,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 
 import android.app.Service
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
+import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.itextpdf.io.image.ImageDataFactory
 import com.itextpdf.kernel.geom.PageSize
 import com.itextpdf.kernel.pdf.PdfDocument
 import com.itextpdf.kernel.pdf.PdfWriter
 import com.itextpdf.layout.Document
-import com.itextpdf.layout.element.Image
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -30,10 +31,10 @@ import java.io.IOException
 import java.util.*
 import kotlin.collections.ArrayList
 import android.util.Base64
-import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import java.nio.file.Files
 import com.itextpdf.html2pdf.HtmlConverter
-
+import java.io.OutputStream
 
 
 class ImageDownloadService : Service() {
@@ -55,7 +56,6 @@ class ImageDownloadService : Service() {
     }
 
     private fun createNotificationChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val name = "Download Channel"
             val descriptionText = "Channel for download notifications"
             val importance = NotificationManager.IMPORTANCE_DEFAULT
@@ -65,10 +65,8 @@ class ImageDownloadService : Service() {
             val notificationManager: NotificationManager =
                 getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
-        }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val jobName = intent?.getStringExtra("jobName")
         val imageUrls = intent?.getStringArrayListExtra("imageUrls")
@@ -78,7 +76,7 @@ class ImageDownloadService : Service() {
             if (hasStoragePermission()) {
 
                 val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("Downloading Images")
+                    .setContentTitle("Downloading Manhwas")
                     .setContentText("Download in progress")
                     .setSilent(true)
                     .setSmallIcon(android.R.drawable.ic_menu_report_image)
@@ -95,13 +93,11 @@ class ImageDownloadService : Service() {
             } else {
                 requestStoragePermission()
             }
-        } else {
         }
 
         return START_STICKY
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun processNextJob() {
         val currentJob = jobQueue.poll()
         if (currentJob != null) {
@@ -113,7 +109,6 @@ class ImageDownloadService : Service() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun downloadImages(job: ImageDownloadJob) {
         Thread {
             val notificationId = UUID.randomUUID().hashCode() // Unique notification ID
@@ -139,7 +134,7 @@ class ImageDownloadService : Service() {
                 // Now that we have ordered image files, create the PDF
                 if (orderedImageFiles.size == job.imageUrls.size) {
                     val pdfFile = createPdfFromImages(orderedImageFiles, job.jobName)
-                    showNotification(notificationId, "${job.jobName} Downloaded Stored in: ${pdfFile.path}")
+                    showNotification(notificationId, "${job.jobName} Downloaded Stored in: ${pdfFile?.path}")
                 }
             } catch (e: Exception) {
                 showNotification(notificationId, "${job.jobName} failed")
@@ -170,103 +165,161 @@ class ImageDownloadService : Service() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun createPdfFromImages(imageFiles: List<File>, jobName: String): File {
-        // Define the temporary HTML file path
-        val tempHtmlFile = File.createTempFile("temp_$jobName", ".html")
+    private fun createPdfFromImages(imageFiles: List<File>, jobName: String): Uri? {
+        val resolver = applicationContext.contentResolver
 
+        // Define the file information for MediaStore
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "$jobName.pdf")
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        }
+
+        // Insert the PDF into the MediaStore
+        val pdfUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+        if (pdfUri != null) {
+            resolver.openOutputStream(pdfUri)?.use { outputStream ->
+                generateSinglePagePdfWithStretchedWidth(outputStream, imageFiles)
+            }
+        } else {
+            Log.e("PdfConversionService", "Failed to create MediaStore entry for PDF")
+        }
+
+        return pdfUri
+    }
+
+    private fun generateSinglePagePdfWithStretchedWidth(outputStream: OutputStream, imageFiles: List<File>) {
         val htmlContent = StringBuilder()
-        htmlContent.append("<html><body style='margin: 0;'>")
+        htmlContent.append("<html><body style='margin: 0; padding: 0;'>")
 
-        // Calculate total height for the PDF page
+        val pdfPageWidth = PageSize.A4.width // Set the target PDF page width (A4 width)
         var totalHeight = 0f
-        val imageHeights = mutableListOf<Float>()
 
+        // Iterate over images, scaling each one to fit the PDF width and adjusting its height accordingly
         for (imageFile in imageFiles) {
-            // Load the image and get its dimensions
             val bitmap = BitmapFactory.decodeFile(imageFile.absolutePath)
-            val imageHeight = bitmap.height.toFloat()
-            val imageWidth = bitmap.width.toFloat()
+            val originalImageWidth = bitmap.width.toFloat()
+            val originalImageHeight = bitmap.height.toFloat()
+
+            // Calculate the new height by preserving the aspect ratio
+            val scaledHeight = (pdfPageWidth / originalImageWidth) * originalImageHeight
+            totalHeight += scaledHeight
 
             val imageData = Files.readAllBytes(imageFile.toPath())
             val encodedImage = Base64.encodeToString(imageData, Base64.DEFAULT)
             val imageType = Files.probeContentType(imageFile.toPath())?.split("/")?.get(1) ?: "png"
 
-            // Append image height to total height and store individual height
-            totalHeight += imageHeight
-            imageHeights.add(imageHeight)
-
-            // Add image to HTML content
-            val imgHtml = "<img src='data:image/$imageType;base64,$encodedImage' style='display: block; width: ${imageWidth}px; height: ${imageHeight}px;' />"
+            // Add the scaled image to the HTML content
+            val imgHtml = "<img src='data:image/$imageType;base64,$encodedImage' style='display: block; width: ${pdfPageWidth}px; height: ${scaledHeight}px;' />"
             htmlContent.append(imgHtml)
         }
 
         // Close the HTML tags
         htmlContent.append("</body></html>")
-        tempHtmlFile.writeText(htmlContent.toString())
-
-        // Define the PDF file path
-        val pdfFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "$jobName.pdf")
 
         try {
-            // Create a PdfWriter instance
-            val writer = PdfWriter(FileOutputStream(pdfFile))
-
-            // Create a PdfDocument instance
+            val writer = PdfWriter(outputStream)
             val pdfDocument = PdfDocument(writer)
 
-            // Set the PDF page size to accommodate all images
-            pdfDocument.defaultPageSize = com.itextpdf.kernel.geom.PageSize(PageSize.A4.width, totalHeight)
+            // Set the PDF page size to the width of A4 and the total height of all images
+            val customPageSize = PageSize(pdfPageWidth, totalHeight)
+            pdfDocument.defaultPageSize = customPageSize
 
-            // Create a Document instance
+            // Create the document
             val document = Document(pdfDocument)
 
-            // Convert HTML to PDF
-            HtmlConverter.convertToPdf(tempHtmlFile.inputStream(), pdfDocument)
+            // Convert the HTML content into the PDF
+            HtmlConverter.convertToPdf(htmlContent.toString().byteInputStream(), pdfDocument)
 
             // Close the document
             document.close()
 
-            // Delete the temporary HTML file
-            tempHtmlFile.delete()
-
         } catch (e: IOException) {
-            Log.e("PdfConversionService", "Error creating PDF: ${e.message}")
+            Log.e("PdfConversionService", "Error creating PDF: ${e.message}", e)
         } catch (e: Exception) {
-            Log.e("PdfConversionService", "Error creating PDF: ${e.message}")
+            Log.e("PdfConversionService", "Error creating PDF: ${e.message}", e)
         }
+    }
 
-        return pdfFile
+
+
+
+    // Add this function to check if the notification permission is granted
+    private fun checkNotificationPermission(): Boolean {
+        // For Android 13+ (API level 33), check if POST_NOTIFICATIONS permission is granted
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else {
+            // For Android versions below 13, no need to check POST_NOTIFICATIONS permission
+            true
+        }
     }
 
     private fun showNotification(notificationId: Int, status: String) {
+        // Check if the permission is granted
+        if (!checkNotificationPermission()) {
+            // Optionally, you can request permission here if needed
+            Log.e("Notification", "Permission not granted")
+            return
+        }
+
         val notificationManager = NotificationManagerCompat.from(this)
+
+        val smallIconResId = getLauncherIconResId()
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Download Status")
             .setContentText(status)
-            .setSmallIcon(android.R.drawable.ic_menu_report_image)
+            .setSmallIcon(smallIconResId) // Set the launcher icon as the small icon
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true) // Auto-cancel the notification when tapped
             .setSilent(true)
             .build()
-        notificationManager.notify(notificationId, notification)
+
+        try {
+            notificationManager.notify(notificationId, notification)
+        } catch (e: SecurityException) {
+            Log.e("Notification", "SecurityException: Notification permission is missing", e)
+        }
     }
 
     private fun updateNotification(notificationId: Int, jobName: String, current: Int, total: Int) {
+        // Check if the permission is granted
+        if (!checkNotificationPermission()) {
+            Log.e("Notification", "Permission not granted")
+            return
+        }
 
         val progress = (current.toFloat() / total * 100).toInt()
 
         val notificationManager = NotificationManagerCompat.from(this)
+
+        // Get the app's launcher icon dynamically
+        val smallIconResId = getLauncherIconResId()
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Downloading $jobName")
-            .setSmallIcon(android.R.drawable.ic_menu_report_image)
+            .setSmallIcon(smallIconResId) // Set the launcher icon as the small icon
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setSilent(true)
             .setProgress(100, progress, false) // Set the progress bar with max 100 and current progress
             .build()
 
-        notificationManager.notify(notificationId, notification)
+        try {
+            notificationManager.notify(notificationId, notification)
+        } catch (e: SecurityException) {
+            Log.e("Notification", "SecurityException: Notification permission is missing", e)
+        }
     }
+
+
+    private fun getLauncherIconResId(): Int {
+        // Get the application's launcher icon dynamically
+        val packageManager = this.packageManager
+        val applicationInfo = packageManager.getApplicationInfo(packageName, 0)
+        return applicationInfo.icon // This gets the icon resource ID
+    }
+
 
 
     private fun hasStoragePermission(): Boolean {
